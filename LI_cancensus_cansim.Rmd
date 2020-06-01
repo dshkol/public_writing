@@ -1,0 +1,276 @@
+---
+title: "LinkedIn Article"
+output: html_document
+---
+
+```{r}
+library(cansim)
+library(cancensus)
+library(purrr)
+library(dplyr)
+library(ggplot2)
+```
+
+## Get more done with Canadian public data
+
+Statistics Canada releases some of the best and most detailed public data of any statistical agency in the world, but while the data is available it is not always easy or efficient to work with. Finding, assembling, and manipulating this data often requires retrieving from multiple locations and multiple file types. This process is inefficient, does not scale, and reduces reproducibility. 
+
+cansim and cancensus are a pair of R packages created by Jens von Bergmann and myself that are designed to address these challenges and to make it much easier to work with Statistics Canada's Census and socioeconomic datasets. These packages are used by [government agencies](), [academics](), [data journalists](), and professionals in the private sector.  
+
+Cancensus has been on CRAN since January 2018 and cansim since December 2018 and usage continues to grow month-over-month. 
+```{r}
+library(adjustedcranlogs)
+comps <- adj_cran_downloads(c('cancensus','cansim'),
+                            from = "2018-01-01",
+                            to = "2020-05-31")
+
+comps %>% 
+  mutate(ym = lubridate::floor_date(date, "month")) %>% 
+  group_by(ym, package) %>% 
+  summarise(adjusted_downloads = sum(adjusted_downloads, na.rm = TRUE)) %>% 
+  ggplot(., aes(x = ym, y = adjusted_downloads, 
+                fill = package, 
+                group = package)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "", y = "Monthly adjusted downloads", colour = "", fill = "") +
+  theme_minimal() +
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank()) +
+  scico::scale_fill_scico_d(palette = "bamako")
+```
+
+## Cancensus
+
+### Installation and configuration
+
+Cancensus is on CRAN and installation is easy. 
+```{r, eval=FALSE}
+install.packages("cancensus")
+library(cancensus)
+```
+Statistics Canada does not provide API access to Census data. [CensusMapper](https://censusmapper.ca/) which is run by the coauthor of the cancensus package clones all publicly available Census data into its own data lake to provide an API mirror. To use the API through the R package you will need to supply an API key, which are freely available from CensusMapper. To check your API key once signed up, just go to “Edit Profile” (in the top-right of the CensusMapper menu bar). The Cancensus package also enables local caching of data to speed up working with datasets. You can store your key securely as well as specify a location to store cached data by adding:
+```
+options(cancensus.api_key = "your_api_key")
+options(cancensus.cache_path = 'XXX')
+```
+This can be made permanent across sessions by adding this code to your `.rprofile` file. 
+
+### Quick demo
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+census_datasets <- c("CA16","CA11","CA06","CA01")
+
+inner_join(
+  map_df(census_datasets, list_census_vectors, .id = "census_dataset") %>%
+    group_by(census_dataset) %>%
+    summarise(vectors = n()),
+  map_df(census_datasets, list_census_regions, .id = "census_dataset") %>%
+    group_by(census_dataset) %>%
+    summarise(regions = n())
+) %>%
+  mutate(
+    census_dataset = case_when(
+      census_dataset == 1 ~ "CA16",
+      census_dataset == 2 ~ "CA11",
+      census_dataset == 3 ~ "CA06",
+      census_dataset == 4 ~ "CA01"
+    )
+  ) %>%
+  tidyr::gather(type, value, vectors:regions) %>%
+  ggplot(., aes(x = census_dataset, y = value, fill = type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(y = "", x = "Census Dataset", fill = "",
+       title = "Available Census vectors and regions by Census year") +
+  theme_minimal() +
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank()) +
+  scico::scale_fill_scico_d(palette = "bamako")
+
+```
+Cancensus has complete data and geography for the 2001, 2006, 2011 (NHS), and 2016 Census years, as well as additional Census-related datasets made available through contributions to open-data. As future Census datasets and other related datasets become available, they will be added for use. To view all available datasets at this time: 
+```{r}
+list_census_datasets()
+```
+and to view available Census data vectors regions:
+```{r}
+list_census_regions("CA16")
+```
+
+```{r message=FALSE, warning=FALSE}
+list_census_vectors("CA16")
+```
+
+Detailed tutorials, reference material, and vignettes are available on the Cancensus package website at https://mountainmath.github.io/cancensus/index.html. To leave feedback, issues, feature requests, or to download the latest development version, checkout, star, and fork the package at https://github.com/mountainMath/cancensus/. 
+
+The main advantages of using cancensus are efficiency of code, scalability of analysis, and complete reproducibility. Here's a few quick demos showing how much you can accomplish with very little code. 
+
+#### Ex. 1 - Downloading and comparing median household income across top 10 CMAs by population
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# Find vector for median household income
+search_census_vectors("median total income of households","CA16", type = "Total")
+# Returns "v_CA16_2397"
+
+# Select top-10 CMAs by populations
+top10cmas <- list_census_regions("CA16") %>% 
+  filter(level == "CMA") %>% 
+  top_n(10, pop) %>% 
+  as_census_region_list()
+
+# Retrieve data
+get_census("CA16", regions = top10cmas, vectors = c("v_CA16_2397")) %>% 
+  select(`Region Name`, `Household Income` = `v_CA16_2397: Median total income of households in 2015 ($)`) %>% 
+  ggplot(., aes(x = `Region Name`, y = `Household Income`)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  coord_flip()  +
+  labs(title = "Median household income of top-10 CMAs by population",
+       caption="Statistics Canada Census 2016 / Generated with cancensus package")
+```
+
+#### Ex. 2 - Visualizing distribution of people of Ukrainian-heritage across Canada
+
+First, search across vectors to find the right vector. 
+```{r}
+search_census_vectors("Ukrainian","CA16", type = "Total") %>% 
+  select(vector, details)
+```
+This returns 5 matches - mother tongue, language spoken most often at home, knowledge of language, ethnic origin, and language spoken at work. The one we need is v_CA16_4185. Let's take a look at what this looks like at the Census subdivision for all of Canada. This time we will retrieve data alongside its spatial information for quick mapping. 
+```{r}
+library(sf)
+
+prairies <- list_census_regions('CA16') %>% filter(name %in% c("Alberta","Saskatchewan","Manitoba")) %>% as_census_region_list()
+
+ukrainian_prairie <- get_census(dataset = "CA16", region = prairies, level = "CT", vectors = c("v_CA16_4185"), geo_format = "sf")
+
+# Calculate share of population with Ukrainian heritage
+ukrainian_prairie %>% 
+  mutate(ukrainian_share = `v_CA16_4185: Ukrainian`/Population) %>% 
+  ggplot(.) +
+  geom_sf(aes(fill = ukrainian_share), colour = NA) +
+  scale_fill_viridis_c(labels=scales::percent) + 
+  theme_void() +
+  labs(title = "Share of population with Ukrainian ethnic heritage",
+       fill = "",
+       caption="Statistics Canada Census 2016 / Generated with cancensus package")
+```
+
+#### Ex.3 - Visualizing child poverty rates in the city of Toronto Census subdivision
+
+Statistics Canada's region code for this geography is 3520005 and the vector code v_CA16_2573 has data for the prevalence of low income residents between ages 0 and 17.  
+```{r}
+get_census("CA16",regions=list(CSD="3520005"),vectors=c(lico_at="v_CA16_2573"),
+                           geo_format="sf",level="CT") %>% 
+  ggplot(.) +
+  geom_sf(aes(fill=lico_at/100), colour = NA) + 
+  scale_fill_viridis_c(option = "inferno",labels=scales::percent) +
+  theme_void() + 
+  labs(title="Toronto share of children in poverty",fill=NULL,caption="Statistics Canada Census 2016 / Generated with cancensus package")
+```
+
+### Reproducible examples with code
+
+There many additional features in the package to make it easier to work with Census variables, including tools for managing variable hierarchy trees. As Census data is by definition spatial data, a standardized and simple to work with spatial output allows for easy combinations with non-Census datasets. Below is a list of fully reproducible examples that show more complex package usage or integrations with other datasets. 
+
+- [Mixing Covid-19 and Census data](https://doodles.mountainmath.ca/blog/2020/05/27/on-mixing-covid-19-and-census-data/)
+- [Using Census data to measure ethnic diversity and segregation across Canadian cities ](https://www.dshkol.com/2018/diversity-and-segregation-canadian-cities/)
+- [Understanding income distributions across geographies and time](https://doodles.mountainmath.ca/blog/2018/10/28/understanding-income-distributions-across-geographies-and-time/)
+- [t-SNE visualizations for finding city lookalikes in Census data](https://www.dshkol.com/2018/mirror-images-clustering-cities-demographics/)
+
+## Cansim
+
+### Installation and getting started
+
+The cansim package is available on CRAN and is easy to download. 
+```{r, eval=FALSE}
+install.packages("cansim")
+```
+Many of the data tables available in Statistics Canada’s data repository are quite large in size. After downloading tables, the cansim package will cache data in a temporary directory for the duration of the current R session. This reduces unnecessary waiting when recompiling code. To force a refresh of the data, pass the refresh=TRUE option in the function call. You can specify the location of the cache in your .Rprofile file.
+```{r}
+options(cansim.cache_path="your cache path")
+```
+If you know the data table catalogue number you are interested in, use get_cansim to download the entire table.
+```{r}
+data <- get_cansim("14-10-0293")
+```
+By default, the data tables retrieved by the package comes in the original format provided by Statistics Canada, but often it is convenient to cast the data into a cleaner data object and to use the included data to transform values by their appropriate scaling or unit variable. This makes it easier to work on the data directly and minimize unnecessary data manipulation. For example, data may be reported as a value in “millions” but with unitless numbers. A built-in convenience function, normalize_cansim_values, refers to the appropriate scaling unit and transforms the raw values into the appropriate absolute value. 
+```{r}
+data <- get_cansim("14-10-0293") %>%
+  normalize_cansim_values
+head(data)
+```
+Taking a look at an overview of the data within a table is a common first step. This is implemented in the package with the get_cansim_table_overview(table_number) function.
+```{r}
+get_cansim_table_overview("14-10-0293")
+```
+When a table number is unknown, you can browse the available tables or search by survey name, keyword or title.
+```{r}
+search_cansim_tables("housing price indexes")
+```
+The cansim package provides many other functions for finding data, working with metadata, and efficiently parsing data structures that make it easier to work with the extensive and varied data available from Statistics Canada.
+
+Additional tutorial vignettes with more details are available on the cansim package website at https://mountainmath.github.io/cansim/index.html. To leave feedback, issues, feature requests, or to download the latest development version, checkout, star, and fork the package at https://github.com/mountainMath/cansim/. 
+
+### Reproducible examples with code
+
+#### Ex. 1  - When did new truck sales overtake new car sales in different provinces?
+
+```{r}
+# Searching for Statistics Canada tables about new motor vehicle sales
+search_cansim_tables("new motor vehicle sales") %>% 
+  select(title, keywords, cansim_table_number)
+```
+We see that the table we need is "20-10-0001". We can get more information about that table including table metadata, descriptions of fields, date availability, and other relevant notes by using some of the auxiliary metadata-related functions in the cansim package. 
+```{r}
+get_cansim_table_info("20-10-0001")
+get_cansim_table_overview("20-10-0001")
+get_cansim_table_notes("20-10-0001")
+```
+Now that we have the table number and see that it includes monthly data going back to the 1940s, let's download the data.  We want to then filter results to include only the relevant categories, limiting our analysis to seasonally unadjusted data for Alberta, Quebec, and Ontario, and specifying a starting date of January 1980.
+```{r}
+mv_sales <- get_cansim("20-10-0001")
+
+mv_sales %>%
+  normalize_cansim_values(factors=TRUE) %>% 
+  filter(`Vehicle type` %in% c("Trucks","Passenger cars"),
+         `Origin of manufacture` == "Total, country of manufacture",
+         Sales=="Units",
+         GEO %in% c("Alberta","Quebec","Ontario"),
+         `Seasonal adjustment`=="Unadjusted",
+         Date >= "1980-01-01") %>% 
+  ggplot(., aes(x = Date, y = VALUE, colour = `Vehicle type`)) +
+  geom_line() + geom_smooth() +
+  facet_wrap(~GEO, scales = "free", ncol = 1) +
+  theme_minimal() +
+  labs(x = "", y = "Units sold per month", 
+      title="Sales of new trucks vs new cars, selected provinces",
+      caption="Statistics Canada table 20-10-0001")
+```
+
+#### Ex. 2 - Bank of Canada yield curve
+
+Power users of Statistics Canada data may already know the exact data vector they are looking for. The cansim package allows users to retrieve individual vector series as easily as full tables.
+```{r}
+yields <- get_cansim_vector(vectors = c("2YR"="v39051","10YR"="v39055"), start_time = "1992-01-01", end_time = "2020-05-25") %>% 
+  normalize_cansim_values() %>% 
+  select(Date, VALUE, label)
+
+yields %>% 
+  filter(VALUE != 0) %>% 
+  ggplot(. ,aes(x = Date, y = VALUE, colour = label)) +
+  geom_line() +
+  theme_minimal() +
+  labs(x = "", y = "Yield", 
+      title="Bank of Canada yield curve (2Yr vs 10Yr)",
+      caption="Statistics Canada vectors V39051, V39055",
+      colour = "")
+```
+
+You can check out these fully reproducible examples with additional detail and context showing advanced use of the cansim package. Each post has a link to a github repo with fully reproducible code. 
+
+- [The fleecing of Canadian millenials](https://doodles.mountainmath.ca/blog/2019/01/31/the-fleecing-of-canadian-millenials/)
+- [The cansim package, Canadian tourism, and slopegraphs](https://www.dshkol.com/2018/cansim-package-tourism-slopegraphs/)
+- [Interprovincial migration](https://doodles.mountainmath.ca/blog/2018/06/14/interprovincial-migration/)
